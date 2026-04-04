@@ -1,0 +1,50 @@
+# Virtual environment
+
+venv/
+
+# Python cache
+
+**pycache**/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+
+.env
+
+# Database files
+
+*.db
+*.sqlite3
+
+# Uploaded files
+
+uploads/
+
+# FAISS / vector index
+
+faiss_index/
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# Logs
+
+*.log
+
+# IDE files
+
+.vscode/
+.idea/
+
+# Jupyter notebooks checkpoints
+
+.ipynb_checkpoints/
+
+# Temporary files
+
+*.tmp
+*.bak

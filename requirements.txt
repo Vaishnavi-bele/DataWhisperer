@@ -1,0 +1,23 @@
+# Data
+pandas>=2.1.0
+numpy>=1.26.0
+
+# Backend
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Frontend
+streamlit>=1.31.0
+requests>=2.31.0
+
+# Charts
+plotly>=5.18.0
+
+# File handling
+python-multipart>=0.0.9
+
+# Testing (optional now)
+pytest>=7.4.0
+
+chardet
+pydantic-settings>=2.1.0
