@@ -8,171 +8,146 @@ API = "http://localhost:8000/api"
 TIMEOUT = 60
 
 st.set_page_config(page_title="DataWhisperer", page_icon="🔮", layout="wide")
+import requests
+import pandas as pd
+import plotly.io as pio
+import streamlit as st
 
+API = "http://localhost:8000/api"
 
-# -----------------------
-# API Helper
-# -----------------------
-def call_api(method, endpoint, **kwargs):
-    try:
-        url = f"{API}{endpoint}"
-        if method == "GET":
-            res = requests.get(url, timeout=TIMEOUT, **kwargs)
-        else:
-            res = requests.post(url, timeout=TIMEOUT, **kwargs)
+st.set_page_config(
+    page_title="DataWhisperer",
+    page_icon="🔮",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-        if res.status_code == 200:
-            return res.json(), None
-        return None, res.json().get("detail", res.text)
+# ---------------- CSS ----------------
+st.markdown("""
+<style>
+body, .stApp {background:#06080f;color:#f0f4ff;}
+.block-container {max-width:1300px;margin:auto;padding:1rem;}
+h1 {text-align:center;color:#f59e0b;}
+.card {background:#0c0f1a;border:1px solid #1a2035;padding:1rem;border-radius:10px;margin-bottom:1rem;}
+.stat {font-size:1.4rem;font-weight:700;}
+.small {font-size:0.8rem;color:#8892aa;}
+.sql {background:#050710;padding:10px;border-left:3px solid #3b82f6;border-radius:6px;font-family:monospace;}
+.insight {background:#05150e;padding:10px;border-left:3px solid #10b981;border-radius:6px;}
+.err {background:#150505;padding:10px;border-left:3px solid #ef4444;border-radius:6px;}
+</style>
+""", unsafe_allow_html=True)
 
-    except requests.exceptions.ConnectionError:
-        return None, "Backend not running."
-    except Exception as e:
-        return None, str(e)
+# ---------------- SESSION ----------------
+for k,v in [("session_id",None),("metadata",None),("history",[]),("question","")]:
+    if k not in st.session_state:
+        st.session_state[k]=v
 
+# ---------------- HEADER ----------------
+st.markdown("<h1>🔮 DataWhisperer</h1>", unsafe_allow_html=True)
 
-# -----------------------
-# Header
-# -----------------------
-st.title("🔮 DataWhisperer")
-st.caption("Ask anything · get instant intelligence")
+# ---------------- API CHECK ----------------
+api_ok=False
+try:
+    r=requests.get(f"{API}/health",timeout=2)
+    if r.status_code==200:
+        api_ok=True
+        st.success("✅ API Connected")
+except:
+    st.error("❌ Backend not running")
 
-# -----------------------
-# Sidebar Health Check
-# -----------------------
-with st.sidebar:
-    st.subheader("System Status")
+# ---------------- LAYOUT ----------------
+left, main = st.columns([1,2])
 
-    health, err = call_api("GET", "/health")
+# ---------------- LEFT PANEL ----------------
+with left:
+    st.markdown("### 📂 Upload CSV")
+    uploaded = st.file_uploader("", type=["csv"])
 
-    if health:
-        st.success("✅ API Online")
-        st.caption(f"Model: {health['model']}")
-        st.caption(f"Sessions: {health['active_sessions']}")
-    else:
-        st.error(f"❌ {err}")
-
-
-# -----------------------
-# Session State
-# -----------------------
-if "session_id" not in st.session_state:
-    st.session_state.session_id = None
-if "metadata" not in st.session_state:
-    st.session_state.metadata = None
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "question" not in st.session_state:
-    st.session_state.question = ""
-
-
-# -----------------------
-# Upload Section
-# -----------------------
-st.subheader("📂 Upload CSV")
-uploaded = st.file_uploader("Upload file", type=["csv"])
-
-if uploaded:
-    if not st.session_state.metadata or st.session_state.metadata["filename"] != uploaded.name:
+    if uploaded:
         with st.spinner("Uploading..."):
-            data, err = call_api(
-                "POST",
-                "/upload",
-                files={"file": (uploaded.name, uploaded.getvalue(), "text/csv")},
-            )
+            resp=requests.post(f"{API}/upload",
+                files={"file":(uploaded.name,uploaded.getvalue(),"text/csv")})
+            if resp.status_code==200:
+                data=resp.json()
+                st.session_state.session_id=data["session_id"]
+                st.session_state.metadata=data
+                st.success("Uploaded")
 
-            if data:
-                st.session_state.session_id = data["session_id"]
-                st.session_state.metadata = data
-                st.session_state.history = []
-                st.success("File uploaded successfully")
-            else:
-                st.error(err)
+    if st.session_state.metadata:
+        meta=st.session_state.metadata
+        st.markdown(f"""
+        <div class="card">
+        <div class="stat">{meta['rows']}</div>
+        <div class="small">Rows</div>
+        </div>
+        """, unsafe_allow_html=True)
 
+        st.markdown(f"""
+        <div class="card">
+        <div class="stat">{len(meta['columns'])}</div>
+        <div class="small">Columns</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-# -----------------------
-# Dataset Info
-# -----------------------
-if st.session_state.metadata:
-    meta = st.session_state.metadata
+        st.write("Columns:", meta["columns"])
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Rows", f"{meta['rows']:,}")
-    col2.metric("Columns", len(meta["columns"]))
-    col3.metric("Session", st.session_state.session_id)
+# ---------------- MAIN ----------------
+with main:
+    if st.session_state.metadata:
 
-    with st.expander("Preview"):
-        st.dataframe(pd.DataFrame(meta["preview"]), use_container_width=True)
+        st.markdown("### 💬 Ask Question")
 
-    # -----------------------
-    # Query Section
-    # -----------------------
-    st.subheader("💬 Ask a Question")
+        question = st.text_input(
+            "",
+            value=st.session_state.question,
+            placeholder="e.g. top 10 by revenue"
+        )
 
-    question = st.text_input(
-        "Question",
-        value=st.session_state.question,
-        placeholder="Show top 10 customers",
-    )
+        if st.button("🔮 Ask"):
+            resp=requests.post(f"{API}/query",
+                json={
+                    "session_id":st.session_state.session_id,
+                    "question":question
+                })
+            if resp.status_code==200:
+                st.session_state.history.insert(0,{
+                    "question":question,
+                    "result":resp.json()
+                })
 
-    if st.button("Ask", disabled=not st.session_state.session_id):
-        if not question.strip():
-            st.warning("Enter a question")
-        else:
-            with st.spinner("Processing..."):
-                result, err = call_api(
-                    "POST",
-                    "/query",
-                    json={
-                        "session_id": st.session_state.session_id,
-                        "question": question.strip(),
-                    },
-                )
+        # ---------------- RESULTS ----------------
+        for entry in st.session_state.history:
+            q=entry["question"]
+            r=entry["result"]
 
-                if result:
-                    st.session_state.history.insert(0, {
-                        "question": question,
-                        "result": result
-                    })
-                    st.session_state.question = ""
+            st.markdown(f"### ❓ {q}")
+
+            if not r["success"]:
+                st.markdown(f"<div class='err'>{r.get('error')}</div>", unsafe_allow_html=True)
+                continue
+
+            col1,col2=st.columns([2,1])
+
+            with col1:
+                if r.get("chart_json"):
+                    fig=pio.from_json(r["chart_json"])
+                    st.plotly_chart(fig,use_container_width=True)
                 else:
-                    st.error(err)
+                    st.dataframe(pd.DataFrame(r["data"]))
 
+            with col2:
+                st.markdown(f"""
+                <div class="card">
+                <div class="stat">{r.get('row_count')}</div>
+                <div class="small">Rows</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-# -----------------------
-# Results Section
-# -----------------------
-for i, entry in enumerate(st.session_state.history):
-    st.divider()
+                if r.get("insight"):
+                    st.markdown(f"<div class='insight'>{r['insight']}</div>", unsafe_allow_html=True)
 
-    q = entry["question"]
-    r = entry["result"]
+            with st.expander("SQL"):
+                st.markdown(f"<div class='sql'>{r.get('sql')}</div>", unsafe_allow_html=True)
 
-    st.markdown(f"### ❓ {q}")
-
-    if not r["success"]:
-        st.error(r.get("error", "Error"))
-        continue
-
-    # Chart / Table
-    if r.get("chart_json") and r.get("chart_type") != "table":
-        fig = pio.from_json(r["chart_json"])
-        st.plotly_chart(fig, use_container_width=True)
-    elif r.get("data"):
-        st.dataframe(pd.DataFrame(r["data"]), use_container_width=True)
-
-    # Stats
-    col1, col2 = st.columns(2)
-    col1.metric("Rows", r.get("row_count", 0))
-    col2.metric("Time (ms)", int(r.get("processing_ms", 0)))
-
-    # Insight
-    if r.get("insight"):
-        st.info(r["insight"])
-
-    # SQL
-    with st.expander("SQL"):
-        st.code(r.get("sql", ""), language="sql")
-
-else:
-    st.info("Upload a CSV to begin 🚀")
+    else:
+        st.write("Upload a CSV to start")

@@ -1,144 +1,142 @@
 import re
 import logging
-from typing import Tuple, Dict
+from typing import Tuple, List
 
 logger = logging.getLogger(__name__)
 
-PROMPT_TEMPLATE = """Convert this question to a SQLite SQL query.
-Table name: data
-Columns: {columns}
-Question: {question}
-Rules:
-- Use only SELECT statements
-- Use only the columns listed above
-- Add LIMIT 100 unless user asks for more
-- For top N questions use ORDER BY ... DESC LIMIT N
-SQL:"""
-
 
 class SQLGenerator:
-    def __init__(self, use_llm: bool = False):
-        self._pipeline = None
-        self.use_llm = use_llm  # control LLM usage
 
-    def _get_pipeline(self):
-        """Lazy load LLM model"""
-        if self._pipeline is None:
-            from transformers import pipeline
-            logger.info("Loading Flan-T5 model...")
-            self._pipeline = pipeline(
-                "text2text-generation",
-                model="google/flan-t5-base",
-                max_new_tokens=150,
-            )
-            logger.info("✅ Model loaded")
-        return self._pipeline
+    def generate(self, question: str, schema: dict) -> Tuple[str, str]:
+        q = question.lower().strip()
 
-    def generate(self, question: str, schema: Dict[str, str]) -> Tuple[str, str]:
-        """
-        Returns (sql, explanation)
-        """
-
-        # Try LLM if enabled
-        if self.use_llm:
-            try:
-                sql = self._generate_with_llm(question, schema)
-            except Exception as e:
-                logger.warning(f"LLM failed: {e}")
-                sql = self._fallback_sql(question, schema)
-        else:
-            sql = self._fallback_sql(question, schema)
-
-        # Final cleaning + safety
-        sql = self._clean_sql(sql)
-        sql = self._ensure_safe(sql)
-
-        explanation = self._explain(question)
-
-        logger.info(f"Final SQL: {sql}")
-        return sql, explanation
-
-    def _generate_with_llm(self, question: str, schema: Dict[str, str]) -> str:
-        columns_str = ", ".join(f"{col} ({dtype})" for col, dtype in schema.items())
-
-        prompt = PROMPT_TEMPLATE.format(
-            columns=columns_str,
-            question=question,
-        )
-
-        pipe = self._get_pipeline()
-        result = pipe(prompt)[0]["generated_text"].strip()
-
-        return result
-
-    def _clean_sql(self, raw: str) -> str:
-        raw = re.sub(r"```(?:sql)?", "", raw, flags=re.IGNORECASE)
-        raw = raw.replace("`", "").strip()
-
-        for line in raw.split("\n"):
-            line = line.strip()
-            if line.upper().startswith("SELECT"):
-                return line
-
-        return raw
-
-    def _ensure_safe(self, sql: str) -> str:
-        """Ensure query is safe"""
-        sql_upper = sql.upper()
-
-        # Block dangerous queries
-        for bad in ["DROP", "DELETE", "UPDATE", "INSERT"]:
-            if bad in sql_upper:
-                raise ValueError("Unsafe SQL detected")
-
-        # Ensure SELECT
-        if not sql_upper.startswith("SELECT"):
-            raise ValueError("Only SELECT queries are allowed")
-
-        # Add LIMIT if missing
-        if "LIMIT" not in sql_upper:
-            sql += " LIMIT 100"
-
-        return sql
-
-    def _fallback_sql(self, question: str, schema: Dict[str, str]) -> str:
-        """Rule-based SQL generator"""
-        q = question.lower()
         cols = list(schema.keys())
 
-        num_cols = [
-            c for c, t in schema.items()
-            if any(x in t.lower() for x in ["int", "float", "double"])
-        ]
+        num_cols = [c for c, t in schema.items()
+                    if any(x in t for x in ["int", "float", "double", "numeric", "decimal"])]
 
-        cat_cols = [c for c in cols if c not in num_cols]
+        cat_cols = [c for c, t in schema.items()
+                    if "object" in t or "str" in t]
 
-        # Top N
-        top_match = re.search(r"top\s+(\d+)", q)
-        if top_match and num_cols:
+        mentioned = self._find_mentioned_columns(q, cols)
+        intent = self._detect_intent(q)
+
+        print(f"🔥 Intent: {intent} | Mentioned: {mentioned}")
+
+        sql = self._build_sql(q, intent, mentioned, num_cols, cat_cols)
+        explanation = f"Intent detected: {intent}"
+
+        return sql, explanation
+
+    # -------------------------
+    # COLUMN DETECTION
+    # -------------------------
+    def _find_mentioned_columns(self, question: str, cols: List[str]) -> List[str]:
+        found = []
+        q = question.replace("_", " ").lower()
+
+        for col in cols:
+            readable = col.replace("_", " ").lower()
+            if readable in q:
+                found.append(col)
+
+        return found
+
+    # -------------------------
+    # INTENT DETECTION
+    # -------------------------
+    def _detect_intent(self, q: str) -> str:
+        if re.search(r"\btop\s+\d+\b", q):
+            return "top_n"
+
+        if any(w in q for w in ["count", "how many"]):
+            return "count"
+
+        if any(w in q for w in ["average", "avg", "mean"]):
+            return "average"
+
+        if any(w in q for w in ["total", "sum"]):
+            return "sum"
+
+        if any(w in q for w in ["by", "group"]):
+            return "group"
+
+        return "select"
+
+    # -------------------------
+    # SMART COLUMN SELECTION 🔥
+    # -------------------------
+    def _best_num_col(self, mentioned, num_cols, question):
+        q = question.lower()
+
+        # 1. direct mention
+        for col in mentioned:
+            if col in num_cols:
+                return col
+
+        # 2. keyword mapping
+        keyword_map = {
+            "revenue": ["revenue", "sales", "amount", "income"],
+            "quantity": ["quantity", "qty", "units", "count"],
+            "price": ["price", "cost"]
+        }
+
+        for col in num_cols:
+            col_lower = col.lower()
+            for key, words in keyword_map.items():
+                if any(w in q for w in words) and key in col_lower:
+                    return col
+
+        # 3. fallback
+        return num_cols[0] if num_cols else None
+
+    def _best_cat_col(self, mentioned, cat_cols):
+        for col in mentioned:
+            if col in cat_cols:
+                return col
+        return cat_cols[0] if cat_cols else None
+
+    # -------------------------
+    # SQL BUILDER
+    # -------------------------
+    def _build_sql(self, q, intent, mentioned, num_cols, cat_cols):
+
+        num_col = self._best_num_col(mentioned, num_cols, q)
+        cat_col = self._best_cat_col(mentioned, cat_cols)
+
+        # TOP N
+        top_match = re.search(r"\btop\s+(\d+)\b", q)
+        if intent == "top_n" and top_match:
             n = top_match.group(1)
-            return f"SELECT * FROM data ORDER BY {num_cols[0]} DESC LIMIT {n}"
 
-        # Count
-        if "count" in q or "how many" in q:
-            if cat_cols:
-                return f"SELECT {cat_cols[0]}, COUNT(*) as count FROM data GROUP BY {cat_cols[0]} ORDER BY count DESC"
-            return "SELECT COUNT(*) as total_rows FROM data"
+            if num_col and cat_col:
+                return f"SELECT {cat_col}, SUM({num_col}) as total FROM data GROUP BY {cat_col} ORDER BY total DESC LIMIT {n}"
 
-        # Average
-        if any(word in q for word in ["average", "avg", "mean"]):
-            if num_cols:
-                return f"SELECT AVG({num_cols[0]}) as average_{num_cols[0]} FROM data"
+            if num_col:
+                return f"SELECT * FROM data ORDER BY {num_col} DESC LIMIT {n}"
 
-        # Sum / Total
-        if any(word in q for word in ["sum", "total"]):
-            if num_cols and cat_cols:
-                return f"SELECT {cat_cols[0]}, SUM({num_cols[0]}) as total FROM data GROUP BY {cat_cols[0]} ORDER BY total DESC"
-            if num_cols:
-                return f"SELECT SUM({num_cols[0]}) as total FROM data"
+        # COUNT
+        if intent == "count":
+            if cat_col:
+                return f"SELECT {cat_col}, COUNT(*) as count FROM data GROUP BY {cat_col} ORDER BY count DESC"
+            return "SELECT COUNT(*) as total FROM data"
 
-        # Default
+        # AVERAGE
+        if intent == "average":
+            if num_col:
+                return f"SELECT AVG({num_col}) as average FROM data"
+
+        # SUM
+        if intent == "sum":
+            if num_col and cat_col:
+                return f"SELECT {cat_col}, SUM({num_col}) as total FROM data GROUP BY {cat_col}"
+            if num_col:
+                return f"SELECT SUM({num_col}) as total FROM data"
+
+        # GROUP
+        if intent == "group":
+            if num_col and cat_col:
+                return f"SELECT {cat_col}, SUM({num_col}) as total FROM data GROUP BY {cat_col}"
+
+        # DEFAULT
         return "SELECT * FROM data LIMIT 20"
-
-    def _explain(self, question: str) -> str:
-        return f"The system generated a SQL query to answer: \"{question}\""
