@@ -434,9 +434,18 @@ with main:
                             )
                         except Exception:
                             if r.get("data"):
-                                st.dataframe(pd.DataFrame(r["data"]).fillna(""), use_container_width=True, height=240)
+                                df = pd.DataFrame(r["data"]).fillna("")
+                                if df.empty:
+                                    st.warning("⚠️ No data found")
+                                else:
+                                    st.dataframe(df, use_container_width=True, height=240)
                     elif r.get("data"):
-                        st.dataframe(pd.DataFrame(r["data"]).fillna(""), use_container_width=True, height=240)
+                        df = pd.DataFrame(r["data"]).fillna("")
+
+                        if df.empty:
+                            st.warning("⚠️ No data found for this query")
+                        else:
+                            st.dataframe(df, use_container_width=True, height=240)
 
                 with c2:
                     if r.get("insight"):
@@ -453,6 +462,10 @@ with main:
                 if r.get("data") and r.get("chart_type") != "table":
                     with st.expander("Full data table — " + str(r.get("row_count",0)) + " rows"):
                         dff   = pd.DataFrame(r["data"]).fillna("")
+                        if dff.empty:
+                            st.warning("⚠️ No data to display")
+                        else:
+                            st.dataframe(dff, use_container_width=True)
                         srch  = st.text_input("Search results", placeholder="Filter...", key="srch_" + str(idx))
                         if srch:
                             dff = dff[dff.astype(str).apply(lambda row: row.str.contains(srch, case=False).any(), axis=1)]
@@ -714,7 +727,10 @@ with main:
                         asrch = st.text_input("Filter anomalies", placeholder="Search...", key="anom_search")
                         if asrch:
                             adf = adf[adf.astype(str).apply(lambda row: row.str.contains(asrch, case=False).any(), axis=1)]
-                        st.dataframe(adf, use_container_width=True, height=270)
+                        if adf.empty:
+                            st.info("✅ No anomalies found")
+                        else:
+                            st.dataframe(adf, use_container_width=True, height=270)
                         st.download_button(
                             "Download Anomalies CSV", adf.to_csv(index=False),
                             "anomalies.csv", "text/csv", key="dl_anom",
