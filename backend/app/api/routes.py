@@ -53,39 +53,74 @@ async def upload_csv(file: UploadFile = File(...)):
         message="Loaded " + str(meta["rows"]) + " rows and " + str(len(meta["columns"])) + " columns.",
     )
 
-
 @router.post("/query", response_model=QueryResponse)
 async def query_data(body: QueryRequest):
     start = time.time()
+
     res = session_store.get(body.session_id)
     if not res:
         raise HTTPException(404, "Session not found. Re-upload your CSV.")
+
     df, meta = res
+
     try:
         sql, sql_expl = sql_gen.generate(body.question, meta["column_types"])
     except Exception as e:
         raise HTTPException(500, "SQL generation failed: " + str(e))
+
     try:
         rdf, _ = sql_val.execute(sql, df)
     except ValueError as e:
         ms = round((time.time() - start) * 1000, 1)
         return QueryResponse(
-            success=False, question=body.question,
-            sql=sql, error=str(e), processing_ms=ms,
+            success=False,
+            question=body.question,
+            sql=sql,
+            error=str(e),
+            processing_ms=ms,
         )
-    ct, cj   = chart_sel.select_and_build(rdf, body.question)
-    ins      = insight_gen.generate(body.question, rdf)
-    ms       = round((time.time() - start) * 1000, 1)
+
+    # ─────────────────────────────
+    # 🔥 INTENT-BASED FIXES
+    # ─────────────────────────────
+    q = body.question.lower()
+
+    if any(x in q for x in ["empty", "no data", "blank"]):
+        rdf = rdf.iloc[0:0]
+
+    if "only numerical" in q:
+        rdf = rdf.select_dtypes(include="number")
+
+    if "only categorical" in q:
+        rdf = rdf.select_dtypes(include="object")
+    
+    if rdf.shape[1] == 0:
+        rdf = rdf.iloc[0:0]
+
+    # ─────────────────────────────
+    # 📊 SAFE CHART HANDLING
+    # ─────────────────────────────
+    if rdf is None or rdf.empty:
+        ct, cj = "table", None
+    else:
+        ct, cj = chart_sel.select_and_build(rdf, body.question)
+
+    ins = insight_gen.generate(body.question, rdf)
+    ms = round((time.time() - start) * 1000, 1)
+
     return QueryResponse(
-        success=True, question=body.question,
-        sql=sql, sql_explanation=sql_expl,
+        success=True,
+        question=body.question,
+        sql=sql,
+        sql_explanation=sql_expl,
         columns=list(rdf.columns),
-        data=rdf.head(500).fillna("").to_dict(orient="records"),
-        row_count=len(rdf), chart_type=ct, chart_json=cj,
-        insight=ins, processing_ms=ms,
+        data=rdf.head(500).fillna("N/A").to_dict(orient="records"),
+        row_count=len(rdf),
+        chart_type=ct,
+        chart_json=cj,
+        insight=ins,
+        processing_ms=ms,
     )
-
-
 class AnomalyReq(BaseModel):
     session_id: str
     method: Optional[str] = "isolation_forest"

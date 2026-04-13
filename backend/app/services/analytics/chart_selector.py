@@ -1,116 +1,88 @@
 import pandas as pd
 import plotly.express as px
+from .intent_detector import IntentDetector
 
 
 class ChartSelector:
 
+    def __init__(self):
+        self.intent_detector = IntentDetector()
+
     def select_and_build(self, df: pd.DataFrame, question: str):
-        # ─────────────────────────────────────
-        # 🚫 RULE 0: EMPTY DATA
-        # ─────────────────────────────────────
+
+        # 🚫 EMPTY
         if df is None or df.empty:
             return "table", None
+
+        intent = self.intent_detector.detect(question)
 
         cols = df.columns.tolist()
         num_cols = df.select_dtypes(include="number").columns.tolist()
         cat_cols = df.select_dtypes(include="object").columns.tolist()
 
-        q = question.lower()
-
         # ─────────────────────────────────────
-        # 🚫 RULE 1: RAW / LARGE TABLE → NO CHART
+        # 🎯 INTENT: EMPTY
         # ─────────────────────────────────────
-        if "show all" in q or "list all" in q or len(df) > 100 or len(cols) > 4:
+        if intent == "empty":
             return "table", None
 
         # ─────────────────────────────────────
-        # 🚫 RULE 2: SINGLE VALUE → NO CHART
+        # 🎯 INTENT: ONLY NUMERIC
         # ─────────────────────────────────────
-        if len(df) == 1 and len(num_cols) == 1:
-            return "table", None
+        if intent == "only_numeric":
+            df = df[num_cols]
 
         # ─────────────────────────────────────
-        # 📈 RULE 3: TIME SERIES (HIGH PRIORITY)
+        # 🎯 INTENT: ONLY CATEGORICAL
         # ─────────────────────────────────────
-        date_cols = [c for c in cols if any(x in c.lower() for x in ["date", "time", "month", "year"])]
-
-        if date_cols and num_cols:
-            fig = px.line(
-                df,
-                x=date_cols[0],
-                y=num_cols[0],
-                title=f"{num_cols[0]} over time",
-                markers=True
-            )
-            return "line", fig.to_json()
+        if intent == "only_categorical":
+            df = df[cat_cols]
 
         # ─────────────────────────────────────
-        # 📊 RULE 4: DISTRIBUTION (QUESTION BASED)
+        # 🎯 INTENT: DISTRIBUTION
         # ─────────────────────────────────────
-        if "distribution" in q or "spread" in q or "histogram" in q:
-            if num_cols:
-                fig = px.histogram(
-                    df,
-                    x=num_cols[0],
-                    nbins=20,
-                    title=f"Distribution of {num_cols[0]}"
-                )
-                return "histogram", fig.to_json()
-
-        # ─────────────────────────────────────
-        # 📊 RULE 5: SINGLE NUMERIC COLUMN
-        # ─────────────────────────────────────
-        if len(num_cols) == 1 and not cat_cols:
-            fig = px.histogram(
-                df,
-                x=num_cols[0],
-                nbins=20,
-                title=f"Distribution of {num_cols[0]}"
-            )
+        if intent == "distribution" and num_cols:
+            fig = px.histogram(df, x=num_cols[0], nbins=20,
+                               title=f"Distribution of {num_cols[0]}")
             return "histogram", fig.to_json()
 
         # ─────────────────────────────────────
-        # 📊 RULE 6: CATEGORY + NUMERIC → BAR / PIE
+        # 🎯 SINGLE VALUE → KPI
+        # ─────────────────────────────────────
+        if len(df) == 1 and len(num_cols) == 1:
+            fig = px.bar(df, y=num_cols[0], title=f"{num_cols[0]}")
+            return "bar", fig.to_json()
+
+        # ─────────────────────────────────────
+        # 📈 TIME SERIES
+        # ─────────────────────────────────────
+        date_cols = [c for c in cols if "date" in c.lower()]
+        if date_cols and num_cols:
+            fig = px.line(df, x=date_cols[0], y=num_cols[0], markers=True)
+            return "line", fig.to_json()
+
+        # ─────────────────────────────────────
+        # 📊 CATEGORY + NUMERIC
         # ─────────────────────────────────────
         if len(cat_cols) >= 1 and len(num_cols) >= 1:
             cat = cat_cols[0]
             num = num_cols[0]
 
-            # 🔥 TOO MANY CATEGORIES → LIMIT TOP 10
-            if len(df) > 10:
-                df = df.sort_values(by=num, ascending=False).head(10)
-
-            # PIE only for small groups
             if len(df) <= 5:
-                fig = px.pie(
-                    df,
-                    names=cat,
-                    values=num,
-                    title=f"{num} by {cat}"
-                )
+                fig = px.pie(df, names=cat, values=num)
                 return "pie", fig.to_json()
 
-            fig = px.bar(
-                df,
-                x=cat,
-                y=num,
-                title=f"{num} by {cat}"
-            )
+            fig = px.bar(df, x=cat, y=num)
             return "bar", fig.to_json()
 
         # ─────────────────────────────────────
-        # 📊 RULE 7: MULTIPLE NUMERIC → SCATTER
+        # 📊 ONLY NUMERIC
         # ─────────────────────────────────────
-        if len(num_cols) >= 2:
-            fig = px.scatter(
-                df,
-                x=num_cols[0],
-                y=num_cols[1],
-                title=f"{num_cols[0]} vs {num_cols[1]}"
-            )
-            return "scatter", fig.to_json()
+        if len(num_cols) == 1:
+            fig = px.histogram(df, x=num_cols[0])
+            return "histogram", fig.to_json()
 
         # ─────────────────────────────────────
-        # 🧾 DEFAULT → TABLE
+        # DEFAULT
         # ─────────────────────────────────────
         return "table", None
